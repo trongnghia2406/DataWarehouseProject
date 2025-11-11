@@ -1,0 +1,122 @@
+CREATE TABLE CONFIG (
+ 	ID INT AUTO_INCREMENT PRIMARY KEY,
+ 	TEN VARCHAR(255) NOT NULL,
+ 	URL TEXT,
+ 	DATE_CONFIG DATE,
+ 	TEN_SP TEXT,
+ 	LINK TEXT,
+ 	LINK_ANH TEXT,
+ 	GIA_CU TEXT,
+ 	GIA_MOI TEXT,
+ 	KICH_THUOC_MAN_HINH TEXT,
+ 	RAM TEXT,
+ 	BO_NHO TEXT,
+ 	GIAM_GIA_SMEMBER TEXT,
+ 	GIAM_GIA_SSTUDENT TEXT,
+ 	GIAM_GIA_PHAN_TRAM TEXT, 	 
+ 	COUPON TEXT,
+ 	QUA_TANG TEXT, 			 
+	DANH_GIA TEXT,
+ 	DA_BAN TEXT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE ETL_LOG (
+	ID INT AUTO_INCREMENT PRIMARY KEY,
+	ID_CONFIG INT, 
+	RUN_DATE DATETIME DEFAULT CURRENT_TIMESTAMP,
+	STATUS VARCHAR(50),
+	MESSAGE TEXT,
+	CONSTRAINT FK_LOG_CONFIG FOREIGN KEY (ID_CONFIG) REFERENCES CONFIG (ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+INSERT INTO CONFIG (
+ 	TEN, URL, DATE_CONFIG, TEN_SP, LINK, LINK_ANH, GIA_CU, GIA_MOI,
+ 	KICH_THUOC_MAN_HINH, RAM, BO_NHO, GIAM_GIA_SMEMBER, GIAM_GIA_SSTUDENT,
+ 	GIAM_GIA_PHAN_TRAM, COUPON, QUA_TANG, DANH_GIA, DA_BAN
+)
+VALUES (
+ 	'CELLPHONES',
+ 	'https://cellphones.com.vn/mobile.html',
+ 	CURDATE(),
+ 	'.product__name h3',
+ 	'a.product__link',
+ 	'.product__image img',
+ 	'.product__price--through',
+ 	'.product__price--show', 
+ 	'.product__badge p', 
+ 	'.product__badge p', 
+ 	'.product__badge p', 
+ 	'.block-smem-price',
+ 	'.block-smem-price.edu',
+ 	'.product__box-rating', 
+ 	'.coupon-price',
+ 	'', 
+ 	'',
+ 	''
+),
+(
+ 	'TGDD',
+ 	'https://www.thegioididong.com/dtdd',
+ 	CURDATE(),
+ 	'h3',
+ 	'a.main-contain',
+ 	'.item-img img',
+ 	'.price-old',
+ 	'strong.price',
+ 	'.item-compare span',
+ 	'.prods-group li.act',
+ 	'.prods-group li.act',
+ 	'',
+ 	'',
+ 	'.percent',
+ 	'',
+ 	'.item-gift',
+ 	'.rating_Compare .vote-txt b',
+ 	'.rating_Compare span'
+);
+
+ALTER TABLE config
+ADD COLUMN PRODUCT_CONTAINER TEXT AFTER URL;
+
+UPDATE config
+SET PRODUCT_CONTAINER = 'div.product-info-container.product-item'
+WHERE TEN = 'CELLPHONES';
+
+UPDATE config
+SET PRODUCT_CONTAINER = 'li.item'
+WHERE TEN = 'TGDD';
+
+ALTER TABLE config RENAME COLUMN TEN_SP TO THE_TEN_SP;
+ALTER TABLE config RENAME COLUMN LINK TO THE_LINK;
+ALTER TABLE config RENAME COLUMN LINK_ANH TO THE_LINK_ANH;
+ALTER TABLE config RENAME COLUMN GIA_CU TO THE_GIA_CU;
+ALTER TABLE config RENAME COLUMN GIA_MOI TO THE_GIA_MOI;
+ALTER TABLE config RENAME COLUMN KICH_THUOC_MAN_HINH TO THE_KICH_THUOC_MAN_HINH;
+ALTER TABLE config RENAME COLUMN RAM TO THE_RAM;
+ALTER TABLE config RENAME COLUMN BO_NHO TO THE_BO_NHO;
+ALTER TABLE config RENAME COLUMN GIAM_GIA_SMEMBER TO THE_GIAM_GIA_SMEMBER;
+ALTER TABLE config RENAME COLUMN GIAM_GIA_SSTUDENT TO THE_GIAM_GIA_SSTUDENT;
+ALTER TABLE config RENAME COLUMN GIAM_GIA_PHAN_TRAM TO THE_GIAM_GIA_PHAN_TRAM;
+ALTER TABLE config RENAME COLUMN COUPON TO THE_COUPON;
+ALTER TABLE config RENAME COLUMN QUA_TANG TO THE_QUA_TANG;
+ALTER TABLE config RENAME COLUMN DANH_GIA TO THE_DANH_GIA;
+ALTER TABLE config RENAME COLUMN DA_BAN TO THE_DA_BAN;
+
+ALTER TABLE config ADD COLUMN THE_PRODUCT_CONTAINER TEXT AFTER URL;
+ALTER TABLE config ADD COLUMN THE_BTN_SHOW_MORE TEXT AFTER THE_DA_BAN;
+
+
+UPDATE config
+SET 
+    THE_PRODUCT_CONTAINER = 'div.product-info-container.product-item',
+    THE_BTN_SHOW_MORE = 'a.btn-show-more'
+WHERE TEN = 'CELLPHONES';
+
+UPDATE config
+SET 
+    THE_PRODUCT_CONTAINER = 'li.item',
+    THE_BTN_SHOW_MORE = 'strong.see-more-btn'
+WHERE TEN = 'TGDD';
+
+ALTER TABLE etl_log
+ADD COLUMN ROWS_AFFECTED INT NULL DEFAULT NULL AFTER MESSAGE;
