@@ -306,6 +306,20 @@ VALUES (
     'INSERT INTO PROCESS_LOG (ID_PROCESS, STATUS, MESSAGE) VALUES (%s, %s, ''Process started'')',
     'Chèn một dòng mới vào PROCESS_LOG, thiết lập trạng thái Running và thông báo bắt đầu.');
 
+-- Xóa bảng etl_log, tạo bảng crawl log mới --
+DROP TABLE IF EXISTS etl_log;
 
+CREATE TABLE crawl_log (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    ID_CONFIG INT, 
+    RUN_DATE DATETIME DEFAULT CURRENT_TIMESTAMP,
+    STATUS VARCHAR(20),
+    FILE_PATH VARCHAR(500), 
+    SITE_NAME VARCHAR(100), 
+    ROWS_AFFECTED INT DEFAULT 0,
+    ERROR_MESSAGE TEXT,
+    
+    CONSTRAINT FK_CRAWL_CONFIG FOREIGN KEY (ID_CONFIG) REFERENCES config (ID)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 
