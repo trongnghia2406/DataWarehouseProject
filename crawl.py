@@ -48,15 +48,29 @@ def get_general_config(key, default=None):
     if key == "MAX_PRODUCTS": return "200"
     return default
 
+# ... (Các phần import giữ nguyên)
+
+# === SỬA HÀM NÀY ===
 def start_crawl_log(conn, config_id, site_name):
     try:
         cursor = conn.cursor()
-        check_sql = """
+        
+        check_success_sql = """
+            SELECT ID FROM crawl_log 
+            WHERE ID_CONFIG = %s AND STATUS = 'SUCCESS' 
+            AND DATE(RUN_DATE) = CURDATE()
+        """
+        cursor.execute(check_success_sql, (config_id,))
+        if cursor.fetchone():
+            print(f">>> Site {site_name} (ID: {config_id}) đã cào THÀNH CÔNG hôm nay. Bỏ qua.")
+            return None 
+
+        check_running_sql = """
             SELECT ID FROM crawl_log 
             WHERE ID_CONFIG = %s AND STATUS = 'RUNNING' 
             AND DATE(RUN_DATE) = CURDATE()
         """
-        cursor.execute(check_sql, (config_id,))
+        cursor.execute(check_running_sql, (config_id,))
         if cursor.fetchone():
             print(f"!!! Site {site_name} (ID: {config_id}) đang ở trạng thái RUNNING. Bỏ qua.")
             return None
