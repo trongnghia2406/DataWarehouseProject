@@ -47,10 +47,7 @@ def get_general_config(key, default=None):
     if key == "MAX_SHOW_MORE": return "5"
     if key == "MAX_PRODUCTS": return "200"
     return default
-
-# ... (Các phần import giữ nguyên)
-
-# === SỬA HÀM NÀY ===
+    
 def start_crawl_log(conn, config_id, site_name):
     try:
         cursor = conn.cursor()
