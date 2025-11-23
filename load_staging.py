@@ -3,127 +3,209 @@ import csv
 import os
 import configparser
 import datetime
-import glob 
-import json 
+import glob
+import json
 
+# =======================
+# ĐỌC CONFIG
+# =======================
 config = configparser.ConfigParser()
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 config.read(config_path)
 
-DB_CONTROL_CONFIG = config['database_control']
-DB_STAGING_CONFIG = config['database_staging']
+DB_CONTROL = config['database_control']
+DB_STAGING = config['database_staging']
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def find_latest_csv_file():
-    """Tìm file products_raw_*.csv mới nhất trong thư mục hiện tại."""
+
+# =======================
+# TÌM FILE CSV MỚI NHẤT
+# =======================
+def find_latest_csv():
     try:
-        list_of_files = glob.glob(os.path.join(CURRENT_DIR, 'products_raw_*.csv')) 
-        if not list_of_files:
-            return None 
-        
-        latest_file = max(list_of_files, key=os.path.getmtime)
-        return latest_file
-    except Exception as e:
-        print(f"Lỗi khi tìm file CSV: {e}")
+        files = glob.glob(os.path.join(CURRENT_DIR, "products_raw_*.csv"))
+        if not files:
+            return None
+        return max(files, key=os.path.getmtime)
+    except:
         return None
 
-def log_message(conn, config_id, status, rows=None, details_dict=None):
-    """
-    Ghi log có cấu trúc vào etl_log.
-    details_dict sẽ được chuyển thành chuỗi JSON.
-    """
+
+# =======================
+# GHI LOG
+# =======================
+def log_message(conn, status, rows=None, details=None, process_id=None):
     try:
-        log_cursor = conn.cursor()
-        
-        message_json = None
-        if details_dict:
-            message_json = json.dumps(details_dict, ensure_ascii=False) 
-        
-        sql = "INSERT INTO etl_log (ID_CONFIG, STATUS, MESSAGE, ROWS_AFFECTED) VALUES (%s, %s, %s, %s)"
-        log_cursor.execute(sql, (config_id, status, message_json, rows))
-        
+        cursor = conn.cursor()
+
+        msg_json = json.dumps({
+            "rows": rows,
+            "details": details
+        }, ensure_ascii=False)
+
+        cursor.execute("""
+            INSERT INTO process_log (ID_PROCESS, STATUS, MESSAGE)
+            VALUES (%s, %s, %s)
+        """, (process_id, status, msg_json))
+
         conn.commit()
-        log_cursor.close()
-    except Exception as e:
-        print(f"Lỗi khi ghi log: {e}")
+        cursor.close()
 
+    except Exception as e:
+        print("Lỗi khi ghi PROCESS_LOG:", e)
+
+
+# =======================
+# LẤY CẤU TRÚC BẢNG
+# =======================
+def get_db_columns(cursor):
+    cursor.execute("DESCRIBE PRODUCTS_GENERAL")
+    rows = cursor.fetchall()
+    return [r[0] for r in rows]
+
+
+# =======================
+# LẤY ID_CONFIG TỪ CONFIG
+# =======================
+def get_id_config(conn_control, site_name):
+    cursor = conn_control.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT ID 
+        FROM config
+        WHERE TEN = %s
+        LIMIT 1
+    """, (site_name,))
+
+    result = cursor.fetchone()
+    cursor.close()
+    return result["ID"] if result else None
+
+
+# =======================
+# LẤY RUN_DATE TỪ CRAWL_LOG THEO ID_CONFIG
+# =======================
+def get_latest_run_date(conn_control, id_config):
+    cursor = conn_control.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT RUN_DATE
+        FROM crawl_log
+        WHERE ID_CONFIG = %s
+        ORDER BY RUN_DATE DESC
+        LIMIT 1
+    """, (id_config,))
+
+    result = cursor.fetchone()
+    cursor.close()
+    return result["RUN_DATE"] if result else None
+
+
+# =======================
+# CHƯƠNG TRÌNH CHÍNH
+# =======================
 def main():
-    print("--- Bắt đầu Bước 2: Load Staging (CSV -> DB) ---")
-    conn_control = None
-    conn_staging = None
-    
+    print("\n--- BẮT ĐẦU LOAD STAGING (CSV → DB) ---")
+
+    conn_c = None
+    conn_s = None
+
     try:
-        conn_control = mysql.connector.connect(**DB_CONTROL_CONFIG)
-        conn_staging = mysql.connector.connect(**DB_STAGING_CONFIG)
-        cursor_staging = conn_staging.cursor()
+        conn_c = mysql.connector.connect(**DB_CONTROL)
+        conn_s = mysql.connector.connect(**DB_STAGING)
+        cursor_s = conn_s.cursor()
 
-        csv_file_to_load = find_latest_csv_file()
-        
-        if not csv_file_to_load:
-            print(f"!!! LỖI: Không tìm thấy file CSV (products_raw_*.csv) nào. Bạn đã chạy 'crawl.py' chưa?")
-            log_message(conn_control, None, "LOAD_STAGING_FAIL", rows=0, details_dict={"error": "Không tìm thấy file CSV nguồn"})
+        # Tìm file CSV
+        csv_file = find_latest_csv()
+        if not csv_file:
+            print("!!! Không tìm thấy file CSV.")
+            log_message(conn_c, "LOAD_STAGING_FAIL", 0, {"error": "Không tìm thấy CSV"})
             return
 
-        print(f">>>>>>>>> Đang đọc file: '{csv_file_to_load}'")
-        
-        with open(csv_file_to_load, mode='r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            data_to_insert = [row for row in reader]
-        
-        if not data_to_insert:
-            print(">>>>>>>>> File CSV rỗng, không có gì để load.")
-            log_message(conn_control, None, "LOAD_STAGING_WARN", rows=0, details_dict={"error": "File CSV rỗng", "file_path": csv_file_to_load})
+        print(f">>>>> Đang đọc: {csv_file}")
+
+        # Đọc CSV
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            csv_data = list(reader)
+
+        if not csv_data:
+            print("!!! CSV rỗng.")
+            log_message(conn_c, "LOAD_STAGING_WARN", 0, {"error": "CSV rỗng"})
             return
 
-        print(f">>>>>>>>> Đã đọc {len(data_to_insert)} dòng từ file CSV.")
-        
-        cursor_staging.execute("TRUNCATE TABLE PRODUCTS_GENERAL")
-        print(">>>>>>>>> Đã xóa dữ liệu cũ trong 'PRODUCTS_GENERAL'.")
+        print(f">>>>> {len(csv_data)} dòng CSV")
 
-        sql_insert = """
-            INSERT INTO PRODUCTS_GENERAL
-            (ID_CONFIG, TEN, LINK, LINK_ANH, GIA_CU, GIA_MOI, KICH_THUOC_MAN_HINH,
-             RAM, BO_NHO, GIAM_GIA_SMEMBER, GIAM_GIA_SSTUDENT, GIAM_GIA_PHAN_TRAM,
-             COUPON, QUA_TANG, DANH_GIA, DA_BAN)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) 
-        """
-        
-        tuples_to_insert = [
-            (
-                row.get('SITE_ID'), 
-                row.get('TEN'), row.get('LINK'), row.get('LINK_ANH'), row.get('GIA_CU'),
-                row.get('GIA_MOI'), row.get('KICH_THUOC_MAN_HINH'), row.get('RAM'), row.get('BO_NHO'),
-                row.get('GIAM_GIA_SMEMBER'), row.get('GIAM_GIA_SSTUDENT'),
-                row.get('GIAM_GIA_PHAN_TRAM'), row.get('COUPON'), row.get('QUA_TANG'),
-                row.get('DANH_GIA'), row.get('DA_BAN')
-            ) for row in data_to_insert
-        ]
+        # Lấy danh sách cột DB
+        db_columns = get_db_columns(cursor_s)
 
-        cursor_staging.executemany(sql_insert, tuples_to_insert)
-        
-        count = cursor_staging.rowcount 
-        
-        log_message(conn_control, None, "LOAD_STAGING_SUCCESS", rows=count, 
-                    details_dict={"source_file": os.path.basename(csv_file_to_load), "target_table": "PRODUCTS_GENERAL"})
-        
-        conn_staging.commit() 
-        
-        print(f"\n--- HOÀN TẤT ---")
-        print(f">>>>>>>>> Đã load {count} sản phẩm vào 'PRODUCTS_GENERAL'.")
+        # Xác định cột hợp lệ
+        insert_columns = [col for col in db_columns if col in csv_data[0].keys()]
 
-    except FileNotFoundError: 
-        print(f"!!! LỖI: Không tìm thấy file {csv_file_to_load}.")
-        if conn_control: log_message(conn_control, None, "LOAD_STAGING_FAIL", rows=0, details_dict={"error": f"Không tìm thấy file {csv_file_to_load}"})
+        # Thêm 2 cột system
+        if "NGAY" in db_columns:
+            insert_columns.append("NGAY")
+        if "ID_CONFIG" in db_columns:
+            insert_columns.append("ID_CONFIG")
+
+        print(f">>>>> Cột ghi vào DB: {insert_columns}")
+
+        # Câu SQL Insert
+        col_str = ", ".join(insert_columns)
+        val_str = ", ".join(["%s"] * len(insert_columns))
+        sql_insert = f"INSERT INTO PRODUCTS_GENERAL ({col_str}) VALUES ({val_str})"
+
+        # Xóa dữ liệu cũ
+        cursor_s.execute("TRUNCATE TABLE PRODUCTS_GENERAL")
+        print(">>>>>> Xóa dữ liệu cũ xong.")
+
+        # Chuẩn bị data insert từng dòng
+        tuples = []
+
+        for row in csv_data:
+            site_name = row.get("SITE_NAME")
+
+            # 1) Lấy ID_CONFIG riêng cho từng dòng
+            id_config = get_id_config(conn_c, site_name)
+
+            # 2) Lấy RUN_DATE riêng cho từng site
+            run_date = get_latest_run_date(conn_c, id_config)
+
+            # Gán dữ liệu
+            values = [row.get(col) for col in insert_columns]
+
+            if "NGAY" in insert_columns:
+                values[insert_columns.index("NGAY")] = run_date
+
+            if "ID_CONFIG" in insert_columns:
+                values[insert_columns.index("ID_CONFIG")] = id_config
+
+            tuples.append(tuple(values))
+
+        # Insert batch
+        cursor_s.executemany(sql_insert, tuples)
+        conn_s.commit()
+
+        print(f">>>>> ĐÃ INSERT {cursor_s.rowcount} ROWS.")
+        log_message(conn_c, "LOAD_STAGING_SUCCESS", cursor_s.rowcount,
+                    {"source": os.path.basename(csv_file), "insert_cols": insert_columns})
+
     except Exception as e:
-        if conn_staging: conn_staging.rollback() 
-        if conn_control: log_message(conn_control, None, "LOAD_STAGING_FAIL", rows=0, details_dict={"error": "Lỗi nghiêm trọng", "details": str(e)})
-        print(f"Lỗi nghiêm trọng khi load staging: {e}")
+        if conn_s:
+            conn_s.rollback()
+
+        print("LỖI:", e)
+        log_message(conn_c, "LOAD_STAGING_FAIL", 0, {"error": str(e)})
+
     finally:
-        if 'cursor_staging' in locals() and cursor_staging: cursor_staging.close()
-        if conn_staging: conn_staging.close()
-        if conn_control: conn_control.close()
-        print(">>>>>>>>> Đã đóng kết nối DB.")
+        if conn_s:
+            conn_s.close()
+        if conn_c:
+            conn_c.close()
+
+        print(">>> ĐÃ ĐÓNG KẾT NỐI.")
+
 
 if __name__ == "__main__":
     main()
