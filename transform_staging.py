@@ -1,226 +1,208 @@
-import mysql.connector 
-import re 
+import mysql.connector
+from mysql.connector import Error as MySQLError
+import sys
+import re
 import configparser
 import os
 import datetime
-import json
+
+def load_sql_commands(cursor):
+    sql_commands = {}
+    try:
+        cursor.execute("SELECT COMMAND_NAME, SQL_QUERY FROM SQL_COMMANDS")
+        # Vẫn không hiểu tại sao không dùng for (name, query) on cursor duyệt qua dic
+        for row in cursor:
+            name = row['COMMAND_NAME']
+            query = row['SQL_QUERY']
+            #print(name)
+            sql_commands[name] = query
+        return sql_commands
+    except Exception as e:
+        print(f"LỖI: Không thể tải các lệnh SQL từ db_control. Chi tiết: {e}")
+        raise
+
+def execute_sp_definition(cursor, query_name):
+    sp_query = SQL_COMMANDS.get(query_name)
+    if not sp_query:
+        raise Exception(f"LỖI: Không tìm thấy lệnh SQL: {query_name}")
+    sp_name_only = query_name
+    try:
+        cursor.execute(f"DROP PROCEDURE IF EXISTS {sp_name_only}")
+        sp_create_command = re.search(r'(CREATE\s+PROCEDURE.*)', sp_query, re.DOTALL | re.IGNORECASE)
+        if not sp_create_command:
+            raise Exception("Lỗi: Không tìm thấy 'CREATE PROCEDURE' trong định nghĩa SQL.")
+        for result in cursor.execute(sp_create_command.group(0), multi=True):
+            pass
+        print(f"Dùng {query_name} với phương pháp multi.")
+        return
+    except (TypeError, MySQLError) as e:
+        if 'unexpected keyword argument \'multi\'' in str(e) or 'You have an error in your SQL syntax' in str(e):
+            pass
+        else:
+            raise MySQLError(f"Lỗi SQL trong Phương pháp 1: {e}")
+    try:
+        match = re.search(r'(\bCREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE.*?END\s*\$\$)', sp_query, re.DOTALL | re.IGNORECASE)
+        if not match:
+            raise Exception("Lỗi Regex: Không tìm thấy khối 'CREATE PROCEDURE...END$$'.")
+        full_sp_text = match.group(1)
+        cleaned_sp = re.sub(r'[^\x20-\x7E\t\n\r]+', ' ', full_sp_text).strip()
+        final_query = cleaned_sp.replace('$$', ';')
+        cursor.execute(f"DROP PROCEDURE IF EXISTS {sp_name_only}")
+        cursor.execute(final_query)
+        print(f"Dùng {query_name} Phương pháp đơn.")
+    except MySQLError as err:
+        raise MySQLError(f"Lỗi SQL khi cố gắng tạo SP (Sau khi lỗi 'multi'): {err.msg}")
+    except Exception as e:
+        if "Lỗi Regex" in str(e):
+            raise
+        raise Exception(f"Lỗi không xác định khi tạo SP: {e}")
+
 
 config = configparser.ConfigParser()
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
-config.read(config_path)
-
+config.read(config_path, encoding='utf-8-sig')
 DB_CONTROL_CONFIG = config['database_control']
 DB_STAGING_CONFIG = config['database_staging']
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKUP_DIR = os.path.join(CURRENT_DIR, "backup") 
+TODAY_STR = datetime.date.today().strftime("%Y_%m_%d")
+CSV_FILE_NAME = f"products_raw_{TODAY_STR}.csv"
+CSV_FILE_PATH = os.path.join(CURRENT_DIR, CSV_FILE_NAME)
+# 1. Kết nối với Control DB
+try:
+    conn_control = mysql.connector.connect(**DB_CONTROL_CONFIG)
+    cursor_control = conn_control.cursor(dictionary=True)
+    print(f"Kết nối Database Control ({DB_CONTROL_CONFIG.get('database')}) thành công.")
+    conn_staging = mysql.connector.connect(**DB_STAGING_CONFIG)
+    cursor_staging = conn_staging.cursor()
+    print(f"Kết nối Database Staging ({DB_STAGING_CONFIG.get('database')}) thành công.")
+    print(">>>>>>>>>>>> BƯỚC 1: Kết nối DB")
+except MySQLError as err:
+    print(f"LỖI KẾT NỐI hoặc SQL: {err}")
+    if conn_control and conn_control.is_connected():
+        conn_control.close()
+    if conn_staging and conn_staging.is_connected():
+        conn_staging.close()
+    sys.exit(1)
+#2 Load lệnh.
+CMD_CLEAN_DATA = 'SP_ETL_CLEAN_DATA'
+CMD_SCD_UPDATE = 'SP_ETL_SCD_UPDATE_PRODUCT'
+CMD_UPDATE_LOG = 'SP_ETL_UPDATE_LOG_STATUS'
+CMD_COUNT_PROCESS_LOG = 'COUNT_RUNNING_PROCESS_LOG'
+CMD_COUNT_ETL_LOG = 'COUNT_RUNNING_ETL_LOG'
+CMD_EXEC_SCD = 'SP_ETL_PRODUCT_SCD_EXEC'
+CMD_SELECT_PROCESS_ID = 'SELECT_PROCESS_ID'
+CMD_INSERT_PROCESS_LOG_RUNNING = 'INSERT_PROCESS_LOG_RUNNING'
+CMD_SELECT_PROCESS_LOG_WAITING = 'SELECT_PROCESS_LOG_WAITING'
+CMD_UPDATE_PROCESS_LOG_RUNNING = 'UPDATE_PROCESS_LOG_RUNNING'
 
-def log_message(conn, config_id, status, rows=None, details_dict=None):
-    """Ghi log có cấu trúc vào etl_log."""
-    try:
-        log_cursor = conn.cursor()
-        message_json = None
-        if details_dict:
-            message_json = json.dumps(details_dict, ensure_ascii=False) 
-        
-        sql = "INSERT INTO etl_log (ID_CONFIG, STATUS, MESSAGE, ROWS_AFFECTED) VALUES (%s, %s, %s, %s)"
-        log_cursor.execute(sql, (config_id, status, message_json, rows))
-        conn.commit()
-        log_cursor.close()
-    except Exception as e:
-        print(f"Lỗi khi ghi log: {e}")
+SQL_COMMANDS = load_sql_commands(cursor_control)
+SP_CLEAN_DATA_QUERY = SQL_COMMANDS[CMD_CLEAN_DATA]
+SP_SCD_UPDATE_QUERY = SQL_COMMANDS[CMD_SCD_UPDATE]
+SP_UPDATE_LOG_STATUS = SQL_COMMANDS[CMD_UPDATE_LOG]
+COUNT_PROCESS_LOG_QUERY = SQL_COMMANDS[CMD_COUNT_PROCESS_LOG]
+COUNT_ETL_LOG_QUERY = SQL_COMMANDS[CMD_COUNT_ETL_LOG]
+SP_EXEC_SCD_QUERY = SQL_COMMANDS[CMD_EXEC_SCD]
+SELECT_PROCESS_ID_QUERY = SQL_COMMANDS[CMD_SELECT_PROCESS_ID]
+INSERT_LOG_RUNNING_QUERY = SQL_COMMANDS[CMD_INSERT_PROCESS_LOG_RUNNING]
+SELECT_LOG_WAITING_QUERY = SQL_COMMANDS[CMD_SELECT_PROCESS_LOG_WAITING]
+UPDATE_LOG_RUNNING_QUERY = SQL_COMMANDS[CMD_UPDATE_PROCESS_LOG_RUNNING]
+try:
+    execute_sp_definition(cursor_staging, CMD_CLEAN_DATA)
+    conn_staging.commit()
+except Exception as e:
+    print(f"LỖI TẠO SP {CMD_CLEAN_DATA}: {e}")
+    raise
+try:
+    execute_sp_definition(cursor_staging, CMD_SCD_UPDATE)
+    conn_staging.commit()
+except Exception as e:
+    print(f"LỖI TẠO SP {CMD_SCD_UPDATE}: {e}")
+    raise
+try:
+    execute_sp_definition(cursor_control, CMD_UPDATE_LOG)
+    conn_staging.commit()
+except Exception as e:
+    print(f"LỖI TẠO SP {CMD_UPDATE_LOG}: {e}")
+    raise
+print(">>>>>>>>>>>> BƯỚC 2: Tải lệnh thành công")
 
-def clean_price(price_str):
-    if not price_str: return None
-    cleaned = re.sub(r'[^\d]', '', price_str)
-    try: return float(cleaned)
-    except ValueError: return None
-def clean_spec(spec_str, unit):
-    if not spec_str: return None
-    match = re.search(r'(\d+[\.,]?\d*)', spec_str.replace(',', '.'))
-    if match:
-        try:
-            val = float(match.group(1))
-            if 'T' in spec_str.upper() and unit.upper() == 'GB': return val * 1024
-            return val
-        except ValueError: return None
-    return None
-def clean_rating(rating_str):
-    if not rating_str: return None
-    match = re.search(r'(\d[\.,]?\d*)', rating_str.replace(',', '.'))
-    if match:
-        try: return float(match.group(1))
-        except ValueError: return None
-    return None
-def clean_sold(sold_str):
-    if not sold_str: return None
-    cleaned = sold_str.lower().replace('đã bán', '').strip()
-    num_part = re.search(r'(\d+[\.,]?\d*)', cleaned.replace(',', '.'))
-    if not num_part: return None
-    try:
-        num = float(num_part.group(1))
-        if 'k' in cleaned: num *= 1000
-        return int(num)
-    except ValueError: return None
-def clean_percent(percent_str):
-    if not percent_str: return None
-    match = re.search(r'(\d+[\.,]?\d*)', percent_str.replace(',', '.'))
-    if match:
-        try: return float(match.group(1)) / 100.0 
-        except ValueError: return None
-    return None
+# 3. Tạo log trong PROCESS_LOG - LOG RỒI
+process_name_to_log = 'Transform_Process'
+cursor_control.execute(SELECT_PROCESS_ID_QUERY, (process_name_to_log,))
+result = cursor_control.fetchone()
+if result:
+    process_id = result['ID']
+else:
+    raise Exception(f"LỖI: Không tìm thấy Process có tên: {process_name_to_log} trong bảng PROCESS.")
+process_log_id = None
+cursor_control.execute(SELECT_LOG_WAITING_QUERY, (process_id,)) 
+waiting_log = cursor_control.fetchone()
+if waiting_log:
+    process_log_id = waiting_log['ID']
+    cursor_control.execute(UPDATE_LOG_RUNNING_QUERY, ('RUNNING', process_log_id))
+    conn_control.commit()
+else:    
+    cursor_control.execute(INSERT_LOG_RUNNING_QUERY, (process_id, 'RUNNING'))
+    conn_control.commit()
+    process_log_id = cursor_control.lastrowid
+print(">>>>>>>>>>>> BƯỚC 4: Ghi Log Bắt đầu Tiến trình vào PROCESS_LOG")
 
-def compare_rows(cleaned_row, target_row):
-    """
-    So sánh một dòng đã làm sạch từ nguồn với một dòng từ đích.
-    Trả về True nếu CÓ THAY ĐỔI, False nếu KHÔNG.
-    
-    Lưu ý: Chúng ta chỉ so sánh các trường nghiệp vụ quan trọng.
-    Các trường như COUPON, QUA_TANG... có thể bỏ qua nếu không muốn
-    chúng kích hoạt một bản ghi lịch sử mới.
-    """
-    if (cleaned_row['TEN'] or '') != (target_row['TEN'] or ''): return True
-    if (cleaned_row['LINK_ANH'] or '') != (target_row['LINK_ANH'] or ''): return True
-    if (cleaned_row['GIA_CU'] or 0) != (target_row['GIA_CU'] or 0): return True
-    if (cleaned_row['GIA_MOI'] or 0) != (target_row['GIA_MOI'] or 0): return True
-    if (cleaned_row['KICH_THUOC_MAN_HINH'] or 0) != (target_row['KICH_THUOC_MAN_HINH'] or 0): return True
-    if (cleaned_row['RAM'] or 0) != (target_row['RAM'] or 0): return True
-    if (cleaned_row['BO_NHO'] or 0) != (target_row['BO_NHO'] or 0): return True
-    if (cleaned_row['DANH_GIA'] or 0) != (target_row['DANH_GIA'] or 0): return True
-    if (cleaned_row['DA_BAN'] or 0) != (target_row['DA_BAN'] or 0): return True
-    
-    return False
+# 4. Kiểm tra critical section.- LOG RỒI
+cursor_control.execute(COUNT_PROCESS_LOG_QUERY)
+running_in_process_log = cursor_control.fetchone()['running_count']
+#cursor_control.execute(COUNT_ETL_LOG_QUERY)
+#running_in_etl_log = cursor_control.fetchone()['running_count']
+#running_count = running_in_process_log + running_in_etl_log -1
+running_count = running_in_process_log-1
+if running_count > 0:
+    #print(f"Đang có {running_count} tiến trình đang ở trạng thái 'Running' (trong PROCESS_LOG: {running_in_process_log - 1}, trong ETL_LOG: {running_in_etl_log}).")
+    status_code = 'WAITING'
+    cursor_control.execute(f"CALL {CMD_UPDATE_LOG}(%s, %s, %s, %s, %s)", (process_log_id, 0, 0, 0, status_code))
+    sys.exit(0)
+print(">>>>>>>>>>>> BƯỚC 3: Kiểm tra Critical Section (Không có tiến trình nào đang chạy)")
 
-def main():
-    print("--- Bắt đầu Bước 3: Transform Staging (SCD Type 2) ---")
-    conn_control = None
-    conn_staging = None
-    
-    current_time = datetime.datetime.now()
-    
-    count_new = 0
-    count_updated = 0
-    count_no_change = 0
-    count_error = 0
-    
-    try:
-        conn_control = mysql.connector.connect(**DB_CONTROL_CONFIG)
-        conn_staging = mysql.connector.connect(**DB_STAGING_CONFIG)
-        cursor_read = conn_staging.cursor(dictionary=True)
-        cursor_write = conn_staging.cursor()
+# 5. Làm sạch dữ liệu. - LOG RỒI
+call_clean_data = f"CALL {CMD_CLEAN_DATA}()"
+try:
+    cursor_staging.execute(call_clean_data) 
+    conn_staging.commit()
+except MySQLError as err:
+    print(f"LỖI SQL khi chạy SP Clean Data: {err}")
+    status_code = 'FAILED_CLEAN_DATA'
+    cursor_control.execute(f"CALL {CMD_UPDATE_LOG}(%s, %s, %s, %s, %s)", (process_log_id, 0, 0, 0, status_code))
+    conn_control.commit()
+    raise
+print(">>>>>>>>>>>> BƯỚC 5: Làm sạch dữ liệu và thêm vào PRODUCT_TRANSFORM")
 
-        cursor_read.execute("SELECT * FROM PRODUCTS_GENERAL")
-        source_rows = cursor_read.fetchall()
-        print(f">>>>>>>>> Đã đọc {len(source_rows)} sản phẩm từ 'PRODUCTS_GENERAL'.")
-
-        cursor_read.execute("SELECT * FROM PRODUCTS_TRANSFORM WHERE EXPIRED_AT = '9999-12-31'")
-        target_rows = cursor_read.fetchall()
-        
-        target_map = {}
-        for row in target_rows:
-            key = (row['ID_CONFIG'], row['LINK'])
-            target_map[key] = row
-        
-        print(f">>>>>>>>> Đã đọc {len(target_map)} bản ghi đang hoạt động từ 'PRODUCTS_TRANSFORM'.")
-
-        for source_row in source_rows:
-            try:
-                cleaned_row = {
-                    'ID': source_row.get('ID'), 
-                    'ID_CONFIG': source_row.get('ID_CONFIG'),
-                    'TEN': source_row.get('TEN'),
-                    'LINK': source_row.get('LINK'),
-                    'LINK_ANH': source_row.get('LINK_ANH'),
-                    'GIA_CU': clean_price(source_row.get('GIA_CU')),
-                    'GIA_MOI': clean_price(source_row.get('GIA_MOI')),
-                    'KICH_THUOC_MAN_HINH': clean_spec(source_row.get('KICH_THUOC_MAN_HINH'), "INCH"),
-                    'RAM': clean_spec(source_row.get('RAM'), "GB"),
-                    'BO_NHO': clean_spec(source_row.get('BO_NHO'), "GB"),
-                    'GIAM_GIA_SMEMBER': clean_price(source_row.get('GIAM_GIA_SMEMBER')),
-                    'GIAM_GIA_SSTUDENT': clean_price(source_row.get('GIAM_GIA_SSTUDENT')),
-                    'GIAM_GIA_PHAN_TRAM': clean_percent(source_row.get('GIAM_GIA_PHAN_TRAM')),
-                    'COUPON': source_row.get('COUPON'),
-                    'QUA_TANG': source_row.get('QUA_TANG'),
-                    'DANH_GIA': clean_rating(source_row.get('DANH_GIA')),
-                    'DA_BAN': clean_sold(source_row.get('DA_BAN'))
-                }
-                
-                key = (cleaned_row['ID_CONFIG'], cleaned_row['LINK'])
-                target_row = target_map.get(key)
-                
-                sql_insert = """
-                    INSERT INTO PRODUCTS_TRANSFORM
-                    (ID, ID_CONFIG, TEN, LINK, LINK_ANH, GIA_CU, GIA_MOI,
-                     KICH_THUOC_MAN_HINH, RAM, BO_NHO, GIAM_GIA_SMEMBER,
-                     GIAM_GIA_SSTUDENT, GIAM_GIA_PHAN_TRAM, COUPON, QUA_TANG,
-                     DANH_GIA, DA_BAN, CREATED_AT, UPDATED_AT, EXPIRED_AT)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                insert_data = (
-                    cleaned_row['ID'], cleaned_row['ID_CONFIG'], cleaned_row['TEN'], cleaned_row['LINK'],
-                    cleaned_row['LINK_ANH'], cleaned_row['GIA_CU'], cleaned_row['GIA_MOI'],
-                    cleaned_row['KICH_THUOC_MAN_HINH'], cleaned_row['RAM'], cleaned_row['BO_NHO'],
-                    cleaned_row['GIAM_GIA_SMEMBER'], cleaned_row['GIAM_GIA_SSTUDENT'],
-                    cleaned_row['GIAM_GIA_PHAN_TRAM'], cleaned_row['COUPON'], cleaned_row['QUA_TANG'],
-                    cleaned_row['DANH_GIA'], cleaned_row['DA_BAN'],
-                    current_time, 
-                    current_time, 
-                    '9999-12-31' 
-                )
-
-                if not target_row:
-                    cursor_write.execute(sql_insert, insert_data)
-                    count_new += 1
-                else:
-                    if compare_rows(cleaned_row, target_row):
-                        sql_update = "UPDATE PRODUCTS_TRANSFORM SET EXPIRED_AT = %s WHERE ID_SR = %s"
-                        cursor_write.execute(sql_update, (current_time, target_row['ID_SR']))
-                        
-                        cursor_write.execute(sql_insert, insert_data)
-                        count_updated += 1
-                    else:
-                        count_no_change += 1
-                        pass
-                        
-            except Exception as e:
-                print(f"Lỗi khi xử lý sản phẩm (LINK: {source_row.get('LINK')}): {e}")
-                log_message(conn_control, source_row.get('ID_CONFIG'), "TRANSFORM_FAIL", rows=0, 
-                            details_dict={"error": "Lỗi xử lý SCD 2", "details": str(e), "product_name": source_row.get('TEN')})
-                count_error += 1
-
-        source_keys = set((r['ID_CONFIG'], r['LINK']) for r in source_rows)
-        target_keys = set(target_map.keys())
-        
-        missing_keys = target_keys - source_keys
-        if missing_keys:
-            print(f">>>>>>>>> Đang xử lý {len(missing_keys)} sản phẩm 'biến mất' (không còn bán)...")
-            for key in missing_keys:
-                target_row = target_map[key]
-                sql_update = "UPDATE PRODUCTS_TRANSFORM SET EXPIRED_AT = %s WHERE ID_SR = %s"
-                cursor_write.execute(sql_update, (current_time, target_row['ID_SR']))
-        
-        total_rows_processed = count_new + count_updated
-        log_details = {
-            "new": count_new,
-            "updated": count_updated,
-            "no_change": count_no_change,
-            "expired": len(missing_keys),
-            "errors": count_error
-        }
-        log_message(conn_control, None, "TRANSFORM_SUCCESS", rows=total_rows_processed, details_dict=log_details)
-        
-        conn_staging.commit() 
-        
-        print(f"\n--- HOÀN TẤT ---")
-        print(f">>> Mới: {count_new} | Cập nhật: {count_updated} | Không đổi: {count_no_change} | Hết hạn: {len(missing_keys)} | Lỗi: {count_error}")
-            
-    except Exception as e:
-        if conn_staging: conn_staging.rollback() 
-        if conn_control: log_message(conn_control, None, "TRANSFORM_FAIL", rows=0, details_dict={"error": "Lỗi nghiêm trọng", "details": str(e)})
-        print(f"Lỗi nghiêm trọng khi transform: {e}")
-    finally:
-        if 'cursor_read' in locals() and cursor_read: cursor_read.close()
-        if 'cursor_write' in locals() and cursor_write: cursor_write.close()
-        if conn_staging: conn_staging.close()
-        if conn_control: conn_control.close()
-        print(">>>>>>>>> Đã đóng kết nối DB.")
-
-if __name__ == "__main__":
-    main()
+# 6. SCD Type 2 - LOG RỒI
+RowsInput, RowsInserted, RowsUpdated = 0, 0, 0
+call_scd = f"CALL {CMD_SCD_UPDATE}(@input_rows, @inserted_rows, @updated_rows)"
+try:
+    cursor_staging.execute(call_scd)
+    conn_staging.commit()
+    cursor_staging.execute("SELECT @input_rows, @inserted_rows, @updated_rows")
+    log_stats = cursor_staging.fetchone()
+    RowsInput = log_stats[0]
+    RowsInserted = log_stats[1]
+    RowsUpdated = log_stats[2]
+    status_code = 'SUCCESS'
+    log_params = (process_log_id, RowsInput, RowsInserted, RowsUpdated, status_code)
+    cursor_control.execute(f"CALL {CMD_UPDATE_LOG}(%s, %s, %s, %s, %s)", log_params)
+    conn_control.commit()
+except MySQLError as err:
+    print(f"LỖI SQL khi chạy SP SCD Update: {err}")
+    status_code = 'FAILED_SCD_UPDATE'
+    cursor_control.execute(f"CALL {CMD_UPDATE_LOG}(%s, %s, %s, %s, %s)", (process_log_id, 0, 0, 0, status_code))
+    conn_control.commit()
+    raise
+print(">>>>>>>>>>>> BƯỚC 6: SCD Type 2 thành công")
+print(f"Kết quả -> Dòng xử lý: {RowsInput} | Dòng chèn mới: {RowsInserted} | Dòng hết hạn: {RowsUpdated}")
+if conn_control and conn_control.is_connected():
+    cursor_control.close()
+    conn_control.close()
+    print(">>> Đã đóng kết nối Control DB.")
+if conn_staging and conn_staging.is_connected():
+    cursor_staging.close()
+    conn_staging.close()
+    print(">>> Đã đóng kết nối Staging DB.")
