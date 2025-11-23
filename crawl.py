@@ -47,7 +47,7 @@ def get_general_config(key, default=None):
     if key == "MAX_SHOW_MORE": return "5"
     if key == "MAX_PRODUCTS": return "200"
     return default
-    
+
 def start_crawl_log(conn, config_id, site_name):
     try:
         cursor = conn.cursor()
@@ -275,7 +275,7 @@ def main():
             print("Lỗi: Bảng config rỗng.")
             return
 
-        with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
+        with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8-sig') as file:
             writer = csv.DictWriter(file, fieldnames=csv_headers)
             writer.writeheader()
             

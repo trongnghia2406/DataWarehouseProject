@@ -126,7 +126,7 @@ def main():
         print(f">>>>> Đang đọc: {csv_file}")
 
         # Đọc CSV
-        with open(csv_file, 'r', encoding='utf-8') as f:
+        with open(csv_file, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             csv_data = list(reader)
 
