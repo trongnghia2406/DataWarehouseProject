@@ -18,24 +18,25 @@ try:
     
     sql_check = """
         SELECT COUNT(*) 
-        FROM etl_log 
-        WHERE STATUS = 'LOAD_DWH_SUCCESS' 
-          AND DATE(RUN_DATE) = %s
+        FROM PROCESS_LOG pl
+        JOIN PROCESS p ON pl.ID_PROCESS = p.ID
+        WHERE p.TEN_PROCESS = 'Load_DataMart' 
+          AND pl.STATUS = 'SUCCESS' 
+          AND DATE(pl.END_TIME) = %s
     """
     
     cursor.execute(sql_check, (today,))
     result = cursor.fetchone()
     
     if result and result[0] > 0:
-        print(f"ETL ngày {today} đã chạy thành công. Không cần chạy lại.")
+        print(f"Hệ thống ngày {today} đã hoàn tất (Load_DataMart SUCCESS). Không chạy lại.")
         sys.exit(0) 
     else:
-        print(f"ETL ngày {today} chưa hoàn tất. Bắt đầu chạy...")
+        print(f"Hệ thống ngày {today} chưa hoàn tất. Bắt đầu chạy...")
         sys.exit(1) 
         
 except Exception as e:
-    print(f"Lỗi khi kiểm tra status: {e}. Coi như CHƯA CHẠY.")
+    print(f"Lỗi kiểm tra status: {e}. Coi như CHƯA CHẠY.")
     sys.exit(1) 
 finally:
-    if conn:
-        conn.close()
+    if conn: conn.close()
