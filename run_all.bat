@@ -53,6 +53,20 @@ if %errorlevel% neq 0 (
     goto :error
 )
 
+echo [6] Bat dau LOAD AGGREGATE >> %BATCH_LOG_FILE%
+%PYTHON_EXE% load_aggregate.py >> %BATCH_LOG_FILE% 2>&1
+if %errorlevel% neq 0 (
+    echo LOI: load_aggregate.py da that bai. >> %BATCH_LOG_FILE%
+    goto :error
+)
+
+echo [7] Bat dau LOAD MART >> %BATCH_LOG_FILE%
+%PYTHON_EXE% load_datamart.py >> %BATCH_LOG_FILE% 2>&1
+if %errorlevel% neq 0 (
+    echo LOI: load_datamart.py da that bai. >> %BATCH_LOG_FILE%
+    goto :error
+)
+
 echo --- HOAN TAT TOAN BO QUA TRINH ETL --- >> %BATCH_LOG_FILE%
 goto :success
 

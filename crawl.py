@@ -13,6 +13,7 @@ import configparser
 import datetime
 import glob
 import shutil
+import json
 
 config = configparser.ConfigParser()
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
@@ -104,7 +105,6 @@ def move_old_csv_files():
     try:
         if not os.path.exists(BACKUP_DIR):
             os.makedirs(BACKUP_DIR)
-            print(f">>>>>>>>> Đã tạo thư mục '{BACKUP_DIR}'")
         
         old_files = glob.glob(os.path.join(CURRENT_DIR, "products_raw_*.csv"))
         moved_count = 0
@@ -117,6 +117,7 @@ def move_old_csv_files():
             print(f">>>>>>>>> Đã backup {moved_count} file CSV cũ.")
     except Exception as e:
         print(f"Lỗi khi backup file: {e}")
+        
 def crawl_one_site(site_row, writer, conn_control, start_id):
     SITE_NAME = site_row['TEN']
     SITE_ID = site_row['ID']
@@ -138,20 +139,16 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
         options.add_argument("window-size=1920,1080")
         options.add_argument("--disable-dev-shm-usage") 
         options.add_argument("--log-level=3") 
-        
         options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36")
-        
         options.set_capability("pageLoadStrategy", "eager")
 
         service = Service(get_general_config("CHROME_DRIVER_PATH"))
         driver = webdriver.Chrome(service=service, options=options)
-        
         driver.set_page_load_timeout(30)
 
         try:
             print(f">>> Đang truy cập: {URL}...")
             driver.get(URL)
-            
             WebDriverWait(driver, int(get_general_config("CRAWL_TIMEOUT"))).until(
                 lambda d: len(d.find_elements(By.CSS_SELECTOR, SEL_PRODUCT_CONTAINER)) > 0
             )
@@ -171,8 +168,7 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
                         print(f">>>>>>>>> Đã click 'Xem thêm' lần {click_count + 1}")
                         time.sleep(3)
                         click_count += 1
-                    except: 
-                        break 
+                    except: break
             
             soup = BeautifulSoup(driver.page_source, "html.parser")
             products = soup.select(SEL_PRODUCT_CONTAINER)
@@ -186,19 +182,15 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
             for item in products:
                 try:
                     get_text = lambda sel: item.select_one(sel).get_text(strip=True) if sel and item.select_one(sel) else ""
-                    
                     name = get_text(site_row['THE_TEN_SP'])
                     if not name: continue
-
                     link = get_text(site_row['THE_LINK'])
                     if not link.startswith("http"):
                         if SITE_NAME == "TGDD": link = "https://www.thegioididong.com" + link
                         elif SITE_NAME == "CELLPHONES" and link.startswith("/"): link = "https://cellphones.com.vn" + link
-
                     img_link = ""
                     img_tag = item.select_one(site_row['THE_LINK_ANH'])
                     if img_tag: img_link = img_tag.get("src") or img_tag.get("data-src") or ""
-
                     price_new = get_text(site_row['THE_GIA_MOI'])
                     price_old = get_text(site_row['THE_GIA_CU'])
                     
@@ -249,10 +241,8 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
                 return count
             else:
                 raise Exception("Không trích xuất được dữ liệu nào")
-
         finally:
             driver.quit()
-
     except Exception as e:
         print(f"!!! Lỗi {SITE_NAME}: {e}")
         update_crawl_log(conn_control, log_id, "FAILED", rows=0, error_msg=str(e))
@@ -269,10 +259,22 @@ def main():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM config")
         configs = cursor.fetchall()
-        cursor.close()
-
+        
         if not configs:
             print("Lỗi: Bảng config rỗng.")
+            return
+
+        sites_need_crawling = False
+        for cfg in configs:
+            sql_check = "SELECT ID FROM crawl_log WHERE ID_CONFIG=%s AND STATUS='SUCCESS' AND DATE(RUN_DATE)=CURDATE()"
+            cursor.execute(sql_check, (cfg['ID'],))
+            if not cursor.fetchone():
+                sites_need_crawling = True 
+                break
+        
+        if not sites_need_crawling:
+            print(">>> TOÀN BỘ WEBSITE ĐÃ ĐƯỢC CÀO THÀNH CÔNG HÔM NAY.")
+            print(">>> Giữ nguyên file CSV hiện tại. Kết thúc chương trình.")
             return
 
         with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8-sig') as file:
