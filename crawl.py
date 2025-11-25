@@ -34,6 +34,7 @@ csv_headers = [
     'SITE_NAME', 'SITE_ID'
 ]
 
+# hàm kết nối DB Control và đọc file config.ini
 def get_db_connection():
     try:
         return mysql.connector.connect(**DB_CONTROL_CONFIG)
@@ -49,6 +50,7 @@ def get_general_config(key, default=None):
     if key == "MAX_PRODUCTS": return "200"
     return default
 
+# hàm khởi tạo log crawl
 def start_crawl_log(conn, config_id, site_name):
     try:
         cursor = conn.cursor()
@@ -62,17 +64,18 @@ def start_crawl_log(conn, config_id, site_name):
         if cursor.fetchone():
             print(f">>> Site {site_name} (ID: {config_id}) đã cào THÀNH CÔNG hôm nay. Bỏ qua.")
             return None 
-
+        # Bước 8. Đã có tiến trình RUNNING?
         check_running_sql = """
             SELECT ID FROM crawl_log 
             WHERE ID_CONFIG = %s AND STATUS = 'RUNNING' 
             AND DATE(RUN_DATE) = CURDATE()
         """
+        # Bước 9. bỏ qua website đang RUNNING
         cursor.execute(check_running_sql, (config_id,))
         if cursor.fetchone():
             print(f"!!! Site {site_name} (ID: {config_id}) đang ở trạng thái RUNNING. Bỏ qua.")
             return None
-
+        # Bước 9. ghi log mới với trạng thái RUNNING
         insert_sql = """
             INSERT INTO crawl_log (ID_CONFIG, SITE_NAME, STATUS, RUN_DATE) 
             VALUES (%s, %s, 'RUNNING', NOW())
@@ -86,6 +89,7 @@ def start_crawl_log(conn, config_id, site_name):
         print(f"Lỗi khi khởi tạo log: {e}")
         return None
 
+# hàm cập nhật log crawl
 def update_crawl_log(conn, log_id, status, file_path=None, rows=0, error_msg=None):
     if not log_id: return
     try:
@@ -101,6 +105,7 @@ def update_crawl_log(conn, log_id, status, file_path=None, rows=0, error_msg=Non
     except Exception as e:
         print(f"Lỗi khi cập nhật log: {e}")
 
+# hàm kiểm tra thư mục backup và di chuyển file cũ
 def move_old_csv_files():
     try:
         if not os.path.exists(BACKUP_DIR):
@@ -130,6 +135,7 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
 
     try:
         SEL_PRODUCT_CONTAINER = site_row['THE_PRODUCT_CONTAINER']
+        # Bước 10. kiểm tra URL và selector
         if not URL or not SEL_PRODUCT_CONTAINER: raise Exception("Thiếu URL hoặc Selector")
 
         options = Options()
@@ -143,11 +149,13 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
         options.set_capability("pageLoadStrategy", "eager")
 
         service = Service(get_general_config("CHROME_DRIVER_PATH"))
+        # Bước 11. khởi động selenium 
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(30)
 
         try:
             print(f">>> Đang truy cập: {URL}...")
+            # Bước 12. Truy cập URL
             driver.get(URL)
             WebDriverWait(driver, int(get_general_config("CRAWL_TIMEOUT"))).until(
                 lambda d: len(d.find_elements(By.CSS_SELECTOR, SEL_PRODUCT_CONTAINER)) > 0
@@ -159,6 +167,7 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
             btn_sel = site_row['THE_BTN_SHOW_MORE']
             
             if btn_sel:
+                # Bước 13. Vòng lặp click "Xem thêm"
                 while click_count < max_show:
                     try:
                         btn = driver.find_element(By.CSS_SELECTOR, btn_sel)
@@ -169,16 +178,17 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
                         time.sleep(3)
                         click_count += 1
                     except: break
-            
+            # Bước 14. phân tích HTML
             soup = BeautifulSoup(driver.page_source, "html.parser")
+            # Bước 15. Tìm danh sách sản phẩm
             products = soup.select(SEL_PRODUCT_CONTAINER)
-            
+            # Bước 16. Ko có sản phẩm, ghi log, dừng
             if not products:
                 raise Exception(f"Không tìm thấy sản phẩm với selector: {SEL_PRODUCT_CONTAINER}")
 
             site_products = []
             current_id = start_id
-            
+            # Bước 17. Trích xuất các thông tin chi tiết
             for item in products:
                 try:
                     get_text = lambda sel: item.select_one(sel).get_text(strip=True) if sel and item.select_one(sel) else ""
@@ -234,14 +244,17 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
                 except: pass
 
             if site_products:
+                # Bước 18. Ghi danh sách sản phẩm vào file csv
                 writer.writerows(site_products)
                 count = len(site_products)
+                # Bước 19. Cập nhật log success
                 update_crawl_log(conn_control, log_id, "SUCCESS", file_path=CSV_FILE_PATH, rows=count)
                 print(f">>>>>>>>> {SITE_NAME}: Thành công ({count} sản phẩm)")
                 return count
             else:
                 raise Exception("Không trích xuất được dữ liệu nào")
         finally:
+            # Bước 20. Đóng selenium
             driver.quit()
     except Exception as e:
         print(f"!!! Lỗi {SITE_NAME}: {e}")
@@ -250,20 +263,22 @@ def crawl_one_site(site_row, writer, conn_control, start_id):
 
 def main():
     print("--- Bắt đầu Quy trình CRAWL ---")
+    # Bước 1, 2. Kiểm tra thư mục backup và di chuyển file cũ
     move_old_csv_files()
-    
+    # Bước 3. Kết nối DB Control và đọc file config.ini
     conn = get_db_connection()
     if not conn: return
 
     try:
         cursor = conn.cursor(dictionary=True)
+        # Bước 4, 5. Lấy danh sách cấu hình website và kiểm tra
         cursor.execute("SELECT * FROM config")
         configs = cursor.fetchall()
         
+        # Bước 6. ko thành công, ghi log lỗi
         if not configs:
             print("Lỗi: Bảng config rỗng.")
             return
-
         sites_need_crawling = False
         for cfg in configs:
             sql_check = "SELECT ID FROM crawl_log WHERE ID_CONFIG=%s AND STATUS='SUCCESS' AND DATE(RUN_DATE)=CURDATE()"
@@ -277,11 +292,14 @@ def main():
             print(">>> Giữ nguyên file CSV hiện tại. Kết thúc chương trình.")
             return
 
+        # Bước 6. tạo mở file csv
         with open(CSV_FILE_PATH, mode='w', newline='', encoding='utf-8-sig') as file:
             writer = csv.DictWriter(file, fieldnames=csv_headers)
             writer.writeheader()
             
             global_id = 1
+            # Bước 7. Lặp qua từng website và thực hiện crawl. 
+            # Bước 21. Ko còn website cần crawl, kết thúc
             for config_row in configs:
                 count = crawl_one_site(config_row, writer, conn, global_id)
                 global_id += count
@@ -291,6 +309,7 @@ def main():
     except Exception as e:
         print(f"Lỗi Main: {e}")
     finally:
+        # Bước 22. Đóng kết nối DB
         if conn.is_connected(): conn.close()
 
 if __name__ == "__main__":
